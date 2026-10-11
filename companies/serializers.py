@@ -1,9 +1,11 @@
-from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from rest_framework import serializers
+
 from .models import Company, CompanyMembership
 
 User = get_user_model()
+
 
 class CompanyMembershipSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source='user.username', read_only=True)
@@ -12,7 +14,8 @@ class CompanyMembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = CompanyMembership
         fields = ['id', 'user', 'username', 'email', 'role']
-        read_only_fields = ['id']
+        read_only_fields = fields
+
 
 class CompanyCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -21,19 +24,15 @@ class CompanyCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
     def create(self, validated_data):
-        request = self.context.get('request')
-        user = request.user
-       
-        with transaction.atomic():
+        user = self.context['request'].user
+        with transaction.atomic():           
             company = Company.objects.create(**validated_data)
             CompanyMembership.objects.create(
-                user=user,
-                company=company,
-                role=CompanyMembership.Role.MANAGER
-            )
+                user=user, company=company, role=CompanyMembership.Role.MANAGER)
         return company
 
-class AddOrUpdateMemberSerializer(serializers.Serializer):
+
+class AddMemberSerializer(serializers.Serializer):
     user_id = serializers.IntegerField()
     role = serializers.ChoiceField(choices=CompanyMembership.Role.choices)
 
@@ -41,3 +40,7 @@ class AddOrUpdateMemberSerializer(serializers.Serializer):
         if not User.objects.filter(id=value).exists():
             raise serializers.ValidationError("المستخدم غير موجود.")
         return value
+
+
+class ChangeRoleSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=CompanyMembership.Role.choices)

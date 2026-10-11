@@ -1,109 +1,57 @@
-from rest_framework import viewsets, status, permissions
+from rest_framework import mixins, permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
-from django.db import transaction
-from django.shortcuts import get_object_or_404
 
+from . import services
 from .models import Company, CompanyMembership
-from .serializers import (
-    CompanyCreateSerializer, 
-    CompanyMembershipSerializer, 
-    AddOrUpdateMemberSerializer
-)
 from .permissions import IsCompanyManager
+from .serializers import (
+    AddMemberSerializer, ChangeRoleSerializer,
+    CompanyCreateSerializer, CompanyMembershipSerializer,
+)
 
 
-class CompanyViewSet(viewsets.ModelViewSet):
+class CompanyViewSet(mixins.CreateModelMixin, mixins.ListModelMixin,
+                     mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+    serializer_class = CompanyCreateSerializer
     permission_classes = [permissions.IsAuthenticated]
-
-    def get_serializer_class(self):
-        return CompanyCreateSerializer
+    company_lookup_kwarg = 'pk'
 
     def get_queryset(self):
-        return Company.objects.filter(companymembership__user=self.request.user).distinct()
+        return Company.objects.filter(memberships__user=self.request.user).order_by('id')
 
-    def perform_create(self, serializer):
-        with transaction.atomic():
-            company = serializer.save()
-            CompanyMembership.objects.create(
-                company=company,
-                user=self.request.user,
-                role=CompanyMembership.Role.MANAGER
-            )
-    def perform_create(self, serializer):
-        company = serializer.save()
-        
-        CompanyMembership.objects.get_or_create(
-            company=company,
-            user=self.request.user,
-            defaults={'role': CompanyMembership.Role.MANAGER}
-        )
-
-    @action(detail=True, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=['get'])
     def members(self, request, pk=None):
         company = self.get_object()
-        memberships = CompanyMembership.objects.filter(company=company).select_related('user')
-        serializer = CompanyMembershipSerializer(memberships, many=True)
-        return Response(serializer.data)
+        mine = CompanyMembership.objects.get(company=company, user=request.user)
+        if mine.role == CompanyMembership.Role.CUSTOMER:
+            raise PermissionDenied("قائمة الأعضاء للموظفين فقط.")
+        qs = company.memberships.select_related('user').order_by('id')
+        return Response(CompanyMembershipSerializer(qs, many=True).data)
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated, IsCompanyManager], url_path='add-member')
-    def add_or_update_member(self, request, pk=None):
+    @action(detail=True, methods=['post'], url_path='add-member',
+            permission_classes=[permissions.IsAuthenticated, IsCompanyManager])
+    def add_member(self, request, pk=None):
         company = self.get_object()
-        serializer = AddOrUpdateMemberSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        s = AddMemberSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        m = services.add_member(company_id=company.pk, **s.validated_data)
+        return Response(CompanyMembershipSerializer(m).data, status=status.HTTP_201_CREATED)
 
-        user_id = serializer.validated_data['user_id']
-        new_role = serializer.validated_data['role']
+    @action(detail=True, methods=['patch'], url_path=r'change-role/(?P<user_id>\d+)',
+            permission_classes=[permissions.IsAuthenticated, IsCompanyManager])
+    def change_role(self, request, pk=None, user_id=None):
+        company = self.get_object()
+        s = ChangeRoleSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        m = services.change_role(company_id=company.pk, user_id=int(user_id),
+                                 new_role=s.validated_data['role'])
+        return Response(CompanyMembershipSerializer(m).data)
 
-        membership = CompanyMembership.objects.filter(company=company, user_id=user_id).first()
-
-        if membership:
-            if membership.role == CompanyMembership.Role.MANAGER and new_role != CompanyMembership.Role.MANAGER:
-                managers_count = CompanyMembership.objects.filter(
-                    company=company, role=CompanyMembership.Role.MANAGER
-                ).count()
-                if managers_count <= 1:
-                    raise ValidationError({"detail": "لا يمكن خفض دور مدير الشركة الأخير."})
-
-            if membership.role == CompanyMembership.Role.AGENT and new_role != CompanyMembership.Role.AGENT:
-                has_unresolved_tickets = membership.user.assigned_tickets.filter(
-                    company=company, status__is_terminal=False
-                ).exists()
-                if has_unresolved_tickets:
-                    raise ValidationError({"detail": "لا يمكن تغيير دور وكيل لديه تكتات جارية غير منتهية."})
-
-            membership.role = new_role
-            membership.save()
-            msg = "تم تحديث دور العضو بنجاح."
-        else:
-            membership = CompanyMembership.objects.create(
-                company=company,
-                user_id=user_id,
-                role=new_role
-            )
-            msg = "تمت إضافة العضو للشركة بنجاح."
-
-        return Response({"detail": msg, "data": CompanyMembershipSerializer(membership).data}, status=status.HTTP_200_OK)
-
-    @action(detail=True, methods=['delete'], permission_classes=[permissions.IsAuthenticated, IsCompanyManager], url_path=r'remove-member/(?P<user_id>\d+)')
+    @action(detail=True, methods=['delete'], url_path=r'remove-member/(?P<user_id>\d+)',
+            permission_classes=[permissions.IsAuthenticated, IsCompanyManager])
     def remove_member(self, request, pk=None, user_id=None):
         company = self.get_object()
-        membership = get_object_or_404(CompanyMembership, company=company, user_id=user_id)
-
-        if membership.role == CompanyMembership.Role.MANAGER:
-            managers_count = CompanyMembership.objects.filter(
-                company=company, role=CompanyMembership.Role.MANAGER
-            ).count()
-            if managers_count <= 1:
-                raise ValidationError({"detail": "لا يمكن إزالة مدير الشركة الأخير."})
-
-        if membership.role == CompanyMembership.Role.AGENT:
-            has_unresolved_tickets = membership.user.assigned_tickets.filter(
-                company=company, status__is_terminal=False
-            ).exists()
-            if has_unresolved_tickets:
-                raise ValidationError({"detail": "لا يمكن إزالة وكيل لديه تكتات جارية غير منتهية."})
-
-        membership.delete()
-        return Response({"detail": "تمت إزالة العضو من الشركة بنجاح."}, status=status.HTTP_204_NO_CONTENT)
+        services.remove_member(company_id=company.pk, user_id=int(user_id))
+        return Response(status=status.HTTP_204_NO_CONTENT)

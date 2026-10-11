@@ -14,10 +14,6 @@ class Category(models.Model):
     def __str__(self):
         return f"{self.name} ({self.company.name})"
 
-
-    def __str__(self):
-        return f"{self.name} ({self.company.name})"
-
 class Ticket(models.Model):
     class Priority(models.TextChoices):
         LOW = 'LOW', 'Low'

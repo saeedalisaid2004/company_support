@@ -1,13 +1,18 @@
 from django.urls import path, include
 from rest_framework_nested import routers
+
 from companies.views import CompanyViewSet
-from .views import TicketViewSet, CommentViewSet
+from workflows.views import StatusViewSet, TransitionViewSet
+from .views import TicketViewSet, CommentViewSet, CategoryViewSet
 
 router = routers.DefaultRouter()
 router.register(r'companies', CompanyViewSet, basename='companies')
 
 companies_router = routers.NestedSimpleRouter(router, r'companies', lookup='company')
 companies_router.register(r'tickets', TicketViewSet, basename='company-tickets')
+companies_router.register(r'categories', CategoryViewSet, basename='company-categories')
+companies_router.register(r'statuses', StatusViewSet, basename='company-statuses')
+companies_router.register(r'workflow-transitions', TransitionViewSet, basename='company-transitions')
 
 tickets_router = routers.NestedSimpleRouter(companies_router, r'tickets', lookup='ticket')
 tickets_router.register(r'comments', CommentViewSet, basename='ticket-comments')
